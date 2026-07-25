@@ -1,0 +1,25 @@
+{
+  // Extension recommendations that trigger auto-install prompts.
+  // These are pre-installed in Cloud Shell but listed here to ensure
+  // they're activated when the workspace opens.
+  "recommendations": [
+    "golang.go",
+    "ms-python.python",
+    "ms-python.vscode-pylance",
+    "redhat.java",
+    "rust-lang.rust-analyzer",
+    "hashicorp.terraform",
+    "redhat.vscode-yaml",
+    "ms-dotnettools.csdevkit",
+    "ms-vscode.cpptools",
+    "Dart-Code.dart-code",
+    "Dart-Code.flutter",
+    "Shopify.ruby-lsp",
+    "castwide.solargraph",
+    "bmewburn.vscode-intelephense-client",
+    "haskell.haskell",
+    "elixir-lsp.vscode-elixir-ls",
+    "betterthantomorrow.calva",
+    "ms-vscode.makefile-tools"
+  ]
+}

