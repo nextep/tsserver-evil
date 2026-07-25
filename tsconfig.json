@@ -1,0 +1,70 @@
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "commonjs",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "plugins": [
+      {
+        "name": "../../../home/user/evil-repo/malicious-ts-plugin",
+        "traceResolution": true
+      },
+      {
+        "name": "../../../../home/user/evil-repo/malicious-ts-plugin",
+        "traceResolution": true
+      },
+      {
+        "name": "../../../../../home/user/evil-repo/malicious-ts-plugin",
+        "traceResolution": true
+      },
+      {
+        "name": "../../../../../../home/user/evil-repo/malicious-ts-plugin",
+        "traceResolution": true
+      },
+      {
+        "name": "../../../home/user/cloudshell_open/evil-repo/malicious-ts-plugin",
+        "traceResolution": true
+      },
+      {
+        "name": "../../../../home/user/cloudshell_open/evil-repo/malicious-ts-plugin",
+        "traceResolution": true
+      },
+      {
+        "name": "../../../../../home/user/cloudshell_open/evil-repo/malicious-ts-plugin",
+        "traceResolution": true
+      },
+      {
+        "name": "../../../../../../home/user/cloudshell_open/evil-repo/malicious-ts-plugin",
+        "traceResolution": true
+      },
+      {
+        "name": "./malicious-ts-plugin",
+        "traceResolution": true
+      },
+      {
+        "name": "../evil-repo/malicious-ts-plugin",
+        "traceResolution": true
+      },
+      {
+        "name": "../../evil-repo/malicious-ts-plugin",
+        "traceResolution": true
+      },
+      {
+        "name": "/home/user/evil-repo/malicious-ts-plugin",
+        "traceResolution": true
+      },
+      {
+        "name": "/home/user/cloudshell_open/evil-repo/malicious-ts-plugin",
+        "traceResolution": true
+      },
+      {
+        "name": "~/.ts-plugin/malicious-ts-plugin",
+        "traceResolution": true
+      }
+    ]
+  },
+  "include": ["*.ts"],
+  "exclude": ["node_modules"]
+}

